@@ -137,7 +137,7 @@ export const Cloud = {
 
 async function nativeSignIn() {
   const FA = window.Capacitor.registerPlugin('FirebaseAuthentication');
-  const r = await FA.signInWithGoogle(); // skipNativeAuth: true (capacitor.config.json) → returns the Google credential
+  const r = await FA.signInWithGoogle({ skipNativeAuth: true }); // native picker only; the web SDK signs in below so Firestore works in the WebView
   const c = r && r.credential;
   if (!c || !c.idToken) throw Object.assign(new Error('Google sign-in did not return a token'), { code: 'shp/no-token' });
   return Cloud.signInWithIdToken(c.idToken, c.accessToken);
