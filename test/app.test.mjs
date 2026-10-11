@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
-import * as L from '../site/js/logic.js';
-const site = new URL('../site/', import.meta.url);
+// Works both in the dev layout (project/site + project/test) and in the repo (site files at the root).
+const site = existsSync(new URL('../site/index.html', import.meta.url)) ? new URL('../site/', import.meta.url) : new URL('../', import.meta.url);
+const L = await import(new URL('js/logic.js', site));
 const read = (p) => readFileSync(new URL(p, site), 'utf8');
 const now = new Date(2026, 9, 11, 15, 55); // Sun 11 Oct 2026, 3:55 PM
 

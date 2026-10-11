@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SH PLANNER: Planner + Notebook</title>
-<meta name="description" content="SH PLANNER: a day/week planner, reminders, habit tracker and rich notebook in one offline-first app. No login, all data stays on your device.">
+<meta name="description" content="SH PLANNER: a day/week planner, reminders, habit tracker and rich notebook in one offline-first app. Sign in with Google to sync across devices, or use it without an account. Works offline.">
 <meta name="theme-color" content="#0A0C12">
 <meta name="color-scheme" content="dark light">
 <link rel="manifest" href="manifest.webmanifest">
@@ -30,6 +30,7 @@
     <header class="top">
       <div class="top-l"><img class="top-logo" src="icons/icon-192.png" alt="" width="28" height="28"><h1 id="topTitle">SH PLANNER</h1></div>
       <div class="top-r">
+        <a class="icon-btn sync-ind" id="syncInd" href="#/settings" hidden aria-label="Sync status"><span class="i i-cloud"></span></a>
         <button class="icon-btn" data-act="search" aria-label="Search"><span class="i i-search"></span></button>
         <button class="icon-btn" data-act="theme" aria-label="Toggle theme"><span class="i i-moon"></span></button>
         <a class="icon-btn" href="#/settings" aria-label="Settings"><span class="i i-gear"></span></a>

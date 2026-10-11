@@ -1,1 +1,1 @@
-{"name":"sh-planner","private":true,"type":"module","scripts":{"test":"node --test test/app.test.mjs"}}
+{"name":"sh-planner","private":true,"type":"module","scripts":{"test":"node --test test/app.test.mjs test/sync.test.mjs"}}

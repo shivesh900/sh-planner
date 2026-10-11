@@ -2,9 +2,11 @@ import * as L from './logic.js';
 import { db } from './db.js';
 import { Notify } from './notify.js';
 import { Images } from './images.js';
+import * as Acct from './account.js';
+import { live, tombstone } from './syncmerge.js';
 
 const { ymd, addDays, parseYmd, toMin, fromMin, fmtTime, fmtRange, DOW, MONTHS } = L;
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -26,19 +28,25 @@ export const S = { tasks: [], notes: [], folders: [], habits: [], settings: { ..
 let saveTimer;
 async function load() {
   const [tasks, notes, folders, habits, kv] = await Promise.all(['tasks', 'notes', 'folders', 'habits', 'kv'].map((s) => db.all(s).catch(() => [])));
-  Object.assign(S, { tasks, notes, folders, habits });
+  Object.assign(S, { tasks: live(tasks), notes: live(notes), folders: live(folders), habits: live(habits) });
   const set = kv.find((k) => k.id === 'settings');
   S.settings = { ...defaults, ...(set ? set.value : {}) };
-  if (!kv.find((k) => k.id === 'seeded')) await seed();
+  Acct.settingsStamp(set ? set.updated || 0 : 0);
+  seeded = !!kv.find((k) => k.id === 'seeded');
+  if (!seeded && Acct.mode() === 'local') await seed();
 }
+let seeded = true;
+async function seedIfNew() { if (!seeded && !S.tasks.length && !S.notes.length) { await seed(); seeded = true; } }
+// Deletes are tombstones ({id, deleted, updated}) so they sync; old ones are purged after 30 days.
+async function tomb(store, rec) { if (!rec) return; const t = tombstone(rec); await db.put(store, t); Acct.push(store, t); }
 const stamp = (o) => { o.updated = Date.now(); if (!o.created) o.created = Date.now(); return o; };
-export async function putTask(t) { stamp(t); const i = S.tasks.findIndex((x) => x.id === t.id); if (i >= 0) S.tasks[i] = t; else S.tasks.push(t); await db.put('tasks', t); changed('tasks'); }
-export async function delTask(id) { S.tasks = S.tasks.filter((t) => t.id !== id); await db.del('tasks', id); S.notes.filter((n) => (n.taskIds || []).includes(id)).forEach((n) => { n.taskIds = n.taskIds.filter((x) => x !== id); putNote(n, true); }); changed('tasks'); }
-export async function putNote(n, quiet) { stamp(n); const i = S.notes.findIndex((x) => x.id === n.id); if (i >= 0) S.notes[i] = n; else S.notes.push(n); await db.put('notes', n); if (!quiet) changed('notes'); }
-async function delNote(id) { const n = S.notes.find((x) => x.id === id); S.notes = S.notes.filter((x) => x.id !== id); await db.del('notes', id); if (n) for (const im of n.images || []) Images.del(im); changed('notes'); }
-async function putHabit(h) { stamp(h); const i = S.habits.findIndex((x) => x.id === h.id); if (i >= 0) S.habits[i] = h; else S.habits.push(h); await db.put('habits', h); changed('habits'); }
-async function putFolder(f) { stamp(f); const i = S.folders.findIndex((x) => x.id === f.id); if (i >= 0) S.folders[i] = f; else S.folders.push(f); await db.put('folders', f); changed('folders'); }
-export async function saveSettings(patch) { Object.assign(S.settings, patch); await db.put('kv', { id: 'settings', value: S.settings }); changed('settings'); }
+export async function putTask(t) { stamp(t); delete t.deleted; const i = S.tasks.findIndex((x) => x.id === t.id); if (i >= 0) S.tasks[i] = t; else S.tasks.push(t); await db.put('tasks', t); Acct.push('tasks', t); changed('tasks'); }
+export async function delTask(id) { const old = S.tasks.find((t) => t.id === id); S.tasks = S.tasks.filter((t) => t.id !== id); await tomb('tasks', old); S.notes.filter((n) => (n.taskIds || []).includes(id)).forEach((n) => { n.taskIds = n.taskIds.filter((x) => x !== id); putNote(n, true); }); changed('tasks'); }
+export async function putNote(n, quiet) { stamp(n); delete n.deleted; const i = S.notes.findIndex((x) => x.id === n.id); if (i >= 0) S.notes[i] = n; else S.notes.push(n); await db.put('notes', n); Acct.push('notes', n); if (!quiet) changed('notes'); }
+async function delNote(id) { const n = S.notes.find((x) => x.id === id); S.notes = S.notes.filter((x) => x.id !== id); await tomb('notes', n); if (n) for (const im of n.images || []) Images.del(im); changed('notes'); }
+async function putHabit(h) { stamp(h); delete h.deleted; const i = S.habits.findIndex((x) => x.id === h.id); if (i >= 0) S.habits[i] = h; else S.habits.push(h); await db.put('habits', h); Acct.push('habits', h); changed('habits'); }
+async function putFolder(f) { stamp(f); delete f.deleted; const i = S.folders.findIndex((x) => x.id === f.id); if (i >= 0) S.folders[i] = f; else S.folders.push(f); await db.put('folders', f); Acct.push('folders', f); changed('folders'); }
+export async function saveSettings(patch) { Object.assign(S.settings, patch); const updated = Acct.settingsStamp(Date.now()); await db.put('kv', { id: 'settings', value: S.settings, updated }); Acct.push('settings', { id: 'prefs', value: { ...S.settings }, updated }); changed('settings'); }
 function changed(what) {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => Notify.sync(S.tasks, S.settings), 400);
@@ -605,7 +613,7 @@ function folderSheet(f) {
     <div class="sheet-actions">${f ? `<button class="btn danger" data-fdel>${ic('trash')}Delete</button>` : '<span></span>'}<button class="btn primary" data-fsave>Save</button></div>`, (sh) => {
     sh.querySelector('[data-fc]').onclick = (e) => { const b = e.target.closest('.opt'); if (!b) return; x.color = b.dataset.v; $$('.opt', b.parentElement).forEach((o) => o.classList.toggle('on', o === b)); };
     sh.querySelector('[data-fsave]').onclick = async () => { x.name = sh.querySelector('[data-fn]').value.trim() || 'Folder'; closeSheet(); await putFolder(x); if (!f) location.hash = '#/notes?f=' + x.id; };
-    const d = sh.querySelector('[data-fdel]'); if (d) d.onclick = async () => { closeSheet(); for (const n of S.notes.filter((n) => n.folderId === f.id)) { n.folderId = null; await putNote(n, true); } S.folders = S.folders.filter((y) => y.id !== f.id); await db.del('folders', f.id); location.hash = '#/notes'; render(); toast('Folder deleted (notes kept)'); };
+    const d = sh.querySelector('[data-fdel]'); if (d) d.onclick = async () => { closeSheet(); for (const n of S.notes.filter((n) => n.folderId === f.id)) { n.folderId = null; await putNote(n, true); } S.folders = S.folders.filter((y) => y.id !== f.id); await tomb('folders', f); location.hash = '#/notes'; render(); toast('Folder deleted (notes kept)'); };
   });
 }
 
@@ -771,7 +779,7 @@ function habitSheet(h) {
     one('[data-he]', 'emoji'); one('[data-hc]', 'color');
     sh.querySelector('[data-hd]').onclick = (e) => { const b = e.target.closest('.opt'); if (!b) return; const v = Number(b.dataset.v); x.days = x.days.includes(v) ? x.days.filter((y) => y !== v) : [...x.days, v]; b.classList.toggle('on'); };
     sh.querySelector('[data-hsave]').onclick = async () => { x.name = sh.querySelector('[data-hn]').value.trim() || 'Habit'; closeSheet(); await putHabit(x); };
-    const del = sh.querySelector('[data-hdel]'); if (del) del.onclick = async () => { closeSheet(); S.habits = S.habits.filter((y) => y.id !== h.id); await db.del('habits', h.id); render(); toast('Habit deleted', 'Undo', () => putHabit(h)); };
+    const del = sh.querySelector('[data-hdel]'); if (del) del.onclick = async () => { closeSheet(); S.habits = S.habits.filter((y) => y.id !== h.id); await tomb('habits', h); render(); toast('Habit deleted', 'Undo', () => putHabit(h)); };
   });
 }
 document.addEventListener('click', (e) => { if (e.target.closest('[data-newhab]')) habitSheet(); const eh = e.target.closest('[data-edithab]'); if (eh) habitSheet(S.habits.find((h) => h.id === eh.dataset.edithab)); });
@@ -808,7 +816,8 @@ views.settings = async (el) => {
   const theme = localStorage.getItem('shp-theme') || 'dark';
   const native = Notify.isNative();
   el.innerHTML = `
-    <div class="h-row" style="margin-top:4px"><h3 class="h2">Profile & look</h3></div>
+    ${Acct.accountSectionHtml()}
+    <div class="h-row"><h3 class="h2">Profile & look</h3></div>
     <div class="set-group">
       <div class="set-row"><div class="lbl"><b>Your name</b><span>Used in the greeting</span></div><input class="inp" style="max-width:170px" data-set-text="name" value="${esc(st.name)}" placeholder="Name"></div>
       <div class="set-row"><div class="lbl"><b>Theme</b></div><div class="seg">${['dark', 'light', 'system'].map((t) => `<button class="${theme === t ? 'on' : ''}" data-theme-set="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
@@ -836,15 +845,16 @@ views.settings = async (el) => {
       <div class="set-row"><div class="lbl"><b>Restore backup</b><span>Merges into what’s here (newer edits win)</span></div><label class="btn sm">${ic('upload')}Import<input type="file" accept="application/json,.json" hidden data-import></label></div>
       <div class="set-row"><div class="lbl"><b>Export to calendar</b><span>.ics with reminders, for Google Calendar</span></div><button class="btn sm" data-ics>${ic('cal')}.ics</button></div>
       <div class="set-row"><div class="lbl"><b>Storage on this device</b><span>${S.tasks.length} tasks · ${S.notes.length} notes · ${S.habits.length} habits${est ? ` · ${(est.usage / 1048576).toFixed(1)} MB used` : ''}</span></div></div>
-      <div class="set-row"><div class="lbl"><b>Erase everything</b><span>Deletes all data on this device</span></div><button class="btn sm danger" data-wipe>Erase</button></div>
+      <div class="set-row"><div class="lbl"><b>Erase everything</b><span>${Acct.isAccount() ? 'Deletes all data in your account, on every device' : 'Deletes all data on this device'}</span></div><button class="btn sm danger" data-wipe>Erase</button></div>
     </div>
-    <div class="note-box"><b>Private & offline-first.</b> No login, no server, no tracking. Everything is saved in this browser’s storage on your device and works without internet. Cloud sync isn’t switched on in v1 (there’s no account), but every record is sync-ready, so it can be added later. Move data between devices with Export / Restore. Note: the website and the Android app keep separate data.</div>
+    <div class="note-box">${Acct.privacyNote()}</div>
     <div class="h-row"><h3 class="h2">Get the app</h3></div>
     <div class="set-group">
       ${!native ? `<div class="set-row"><div class="lbl"><b>Android app (APK)</b><span>Real reminders that fire when the app is closed</span></div><a class="btn sm primary" href="downloads/SH-PLANNER.apk" download>${ic('download')}APK</a></div>` : ''}
       ${installEvt ? `<div class="set-row"><div class="lbl"><b>Install web app</b><span>Add SH PLANNER to your home screen</span></div><button class="btn sm" data-install>Install</button></div>` : ''}
       <div class="set-row"><div class="lbl"><b>SH PLANNER</b><span>v${VERSION} · by Shivesh · ${native ? 'Android app' : 'web'}</span></div><a class="link-btn" href="https://shivesh900.github.io/">More SH apps</a></div>
     </div>`;
+  Acct.bindAccountSection(el);
   el.querySelectorAll('[data-set]').forEach((i) => i.onchange = () => saveSettings({ [i.dataset.set]: i.checked }).then(() => { if (i.dataset.set === 'dailyPlanOn' && i.checked) Notify.ensurePermission(true); }));
   el.querySelectorAll('[data-set-text]').forEach((i) => i.onchange = () => saveSettings({ [i.dataset.setText]: i.value }));
   el.querySelectorAll('[data-set-sel]').forEach((i) => i.onchange = () => saveSettings({ [i.dataset.setSel]: i.value === '' ? null : Number(i.value) }));
@@ -856,9 +866,9 @@ views.settings = async (el) => {
   $('[data-export]', el).onclick = exportBackup;
   $('[data-import]', el).onchange = (e) => importBackup(e.target.files[0]);
   $('[data-ics]', el).onclick = () => { const ics = L.toICS(S.tasks.filter((t) => t.date && !t.done)); download(new Blob([ics], { type: 'text/calendar' }), `sh-planner-${today()}.ics`); if (!Notify.isNative()) toast('Calendar file saved. Open it to add to Google Calendar.'); };
-  $('[data-wipe]', el).onclick = () => openSheet(`<h3>Erase all data?</h3><p class="muted">This deletes every task, note, habit and image on this device. Export a backup first if you might want it back.</p><div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn danger" data-yes>Erase everything</button></div>`, (sh) => {
+  $('[data-wipe]', el).onclick = () => openSheet(`<h3>Erase all data?</h3><p class="muted">${Acct.isAccount() ? 'This deletes every task, note, habit and image in your account, on all your devices.' : 'This deletes every task, note, habit and image on this device.'} Export a backup first if you might want it back.</p><div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn danger" data-yes>Erase everything</button></div>`, (sh) => {
     sh.querySelector('[data-close]').onclick = closeSheet;
-    sh.querySelector('[data-yes]').onclick = async () => { for (const s of ['tasks', 'notes', 'folders', 'habits', 'images']) await db.clear(s); await db.put('kv', { id: 'seeded', value: true }); Object.assign(S, { tasks: [], notes: [], folders: [], habits: [] }); closeSheet(); changed(); toast('All data erased'); };
+    sh.querySelector('[data-yes]').onclick = async () => { if (Acct.isAccount()) { await Acct.eraseAll(); closeSheet(); changed(); toast('All data erased'); return; } for (const s of ['tasks', 'notes', 'folders', 'habits', 'images']) await db.clear(s); await db.put('kv', { id: 'seeded', value: true }); Object.assign(S, { tasks: [], notes: [], folders: [], habits: [] }); closeSheet(); changed(); toast('All data erased'); };
   });
 };
 async function download(blob, name) {
@@ -886,21 +896,32 @@ async function importBackup(file) {
   const merge = (store, cur, inc) => { const map = new Map(cur.map((x) => [x.id, x])); for (const x of inc) { const c = map.get(x.id); if (!c || (x.updated || 0) >= (c.updated || 0)) map.set(x.id, x); } return [...map.values()]; };
   S.tasks = merge('tasks', S.tasks, data.tasks); S.notes = merge('notes', S.notes, data.notes); S.folders = merge('folders', S.folders, data.folders); S.habits = merge('habits', S.habits, data.habits || []);
   await Promise.all([db.bulkPut('tasks', S.tasks), db.bulkPut('notes', S.notes), db.bulkPut('folders', S.folders), db.bulkPut('habits', S.habits)]);
+  for (const s of ['tasks', 'notes', 'folders', 'habits']) Acct.pushMany(s, S[s]);
   const n = await Images.importAll(data.images || []);
   changed(); toast(`Restored ${data.tasks.length} tasks, ${data.notes.length} notes, ${n} images`);
 }
 
 // ================= BOOT =================
+function applyTheme(t) {
+  localStorage.setItem('shp-theme', t);
+  const eff = t === 'system' ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : t;
+  document.documentElement.dataset.theme = eff;
+  $('meta[name=theme-color]').content = eff === 'dark' ? '#0A0C12' : '#F4F5FA';
+}
 async function boot() {
+  Acct.selectDb();
   try { await load(); } catch (e) { console.error(e); $('#view').innerHTML = `<div class="card"><b>Storage unavailable.</b><p class="muted">This browser blocked local storage (private mode?). SH PLANNER needs IndexedDB to save your data.</p></div>`; return; }
   const th = localStorage.getItem('shp-theme'); if (!th && S.settings.theme) setTheme(S.settings.theme);
   render();
+  Acct.initAccounts({ S, defaults, render, toast, openSheet, closeSheet, esc, ic, applyTheme, seedIfNew, notifySync: () => Notify.sync(S.tasks, S.settings) });
+  Acct.consumeToast();
+  Acct.purgeOld().catch(() => {});
   db.persist();
   Notify.init({ onOpen: (data) => { if (data && data.date) location.hash = `#/plan/day/${data.date}`; }, onFire: (n) => toast(`🔔 ${n.title}: ${n.body}`, null, null, 6000) });
   Notify.sync(S.tasks, S.settings);
   setInterval(() => { const k = route().parts[0]; if ((k === 'home' || k === 'plan') && !$('#sheetRoot').innerHTML && !(document.activeElement && document.activeElement.matches('input,textarea'))) render(); }, 60000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { Notify.sync(S.tasks, S.settings); const k = route().parts[0]; if ((k === 'home' || k === 'plan') && !$('#sheetRoot').innerHTML) render(); } });
-  if ('serviceWorker' in navigator && !Notify.isNative() && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && !Notify.isNative() && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
   if (route().q.get('capture')) openCapture();
 }
 boot();
