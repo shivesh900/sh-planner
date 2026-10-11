@@ -6,7 +6,7 @@ import * as Acct from './account.js';
 import { live, tombstone } from './syncmerge.js';
 
 const { ymd, addDays, parseYmd, toMin, fromMin, fmtTime, fmtRange, DOW, MONTHS } = L;
-export const VERSION = '1.1.0';
+export const VERSION = '1.1.1';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
