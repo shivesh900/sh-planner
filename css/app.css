@@ -168,7 +168,7 @@ a{color:inherit}
 .toolbar button:hover,.toolbar button.on{background:var(--surface2);color:var(--text)}
 .toolbar .sep{flex:none;width:1px;background:var(--line);margin:6px 4px}
 .editor{min-height:46vh;outline:none;font-size:16px;line-height:1.6;padding:4px 2px 40px;word-wrap:break-word}
-.editor:empty::before{content:attr(data-ph);color:var(--faint)}
+.editor{position:relative}.editor.is-empty::before{content:attr(data-ph);color:var(--faint);position:absolute;left:2px;top:4px;pointer-events:none}
 .editor h1{font-size:24px;margin:16px 0 6px;line-height:1.25}.editor h2{font-size:19px;margin:14px 0 4px}.editor h3{font-size:16px;margin:12px 0 4px}
 .editor p,.editor div{margin:0 0 4px}
 .editor ul,.editor ol{padding-left:24px;margin:4px 0}

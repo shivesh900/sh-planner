@@ -654,12 +654,15 @@ views.note = (el, parts) => {
       <button class="link-btn" data-linktask>+ Link to task</button>${!n.daily ? `<label class="link-btn" style="cursor:pointer">+ Attach to day<input type="date" data-nday value="${n.date || ''}" style="width:1px;height:1px;opacity:0;position:absolute"></label>` : ''}</div></div>`;
   const ed = $('.editor', el);
   ed.innerHTML = sanitize(n.html);
+  const ph = () => ed.classList.toggle('is-empty', !ed.textContent.trim() && !ed.querySelector('img,li,h1,h2,h3'));
+  ph(); ed.addEventListener('input', ph);
   hydrateImages(ed);
   let t; const save = (quiet) => { clearTimeout(t); t = setTimeout(async () => { n.title = $('[data-title]', el).value; n.html = serialize(ed); n.images = [...ed.querySelectorAll('img[data-img]')].map((i) => i.dataset.img); await putNote(n, true); const s = $('[data-saved]'); if (s) s.textContent = 'Saved ✓'; }, quiet ? 0 : 350); const s = $('[data-saved]'); if (s) s.textContent = 'Saving…'; };
   ed.addEventListener('input', () => save());
   $('[data-title]', el).addEventListener('input', () => save());
   $('[data-title]', el).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ed.focus(); } });
   try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (_) {}
+  ed.addEventListener('focus', () => { if (!ed.innerHTML.trim()) { ed.innerHTML = '<p><br></p>'; const r = document.createRange(); r.setStart(ed.firstChild, 0); r.collapse(true); getSelection().removeAllRanges(); getSelection().addRange(r); } });
   $('.toolbar', el).addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); });
   $('.toolbar', el).addEventListener('click', (e) => { const b = e.target.closest('[data-cmd]'); if (!b) return; ed.focus(); fmt(b.dataset.cmd, ed); save(); });
   $('[data-edimg]', el).addEventListener('change', async (e) => { for (const f of e.target.files) { try { const id = await Images.add(f); ed.focus(); const u = await Images.url(id); document.execCommand('insertHTML', false, `<img data-img="${id}" src="${u}" alt=""><p><br></p>`); } catch (_) { toast('Could not read that image'); } } e.target.value = ''; save(); });
@@ -705,14 +708,18 @@ function mdShortcuts(e, ed, save) {
     return;
   }
   if (e.key !== ' ') return;
-  const sel = getSelection(); if (!sel.rangeCount) return; const node = sel.anchorNode; if (!node || node.nodeType !== 3) return;
-  const txt = node.textContent.slice(0, sel.anchorOffset);
-  const map = { '#': 'h1', '##': 'h2', '###': 'h3', '-': 'ul', '*': 'ul', '1.': 'ol', '[]': 'cl', '[ ]': 'cl', '>': 'quote' };
-  const k = map[txt.trim()]; if (!k || txt.trim() !== txt.replace(/^\s+/, '')) return;
-  const blockEl = node.parentElement.closest('p,div,h1,h2,h3,li,blockquote') ; if (blockEl && blockEl !== ed && blockEl.textContent.trim() !== txt.trim() && !blockEl.textContent.startsWith(txt.trim())) return;
+  const sel = getSelection(); if (!sel.rangeCount || !sel.isCollapsed) return; const node = sel.anchorNode; if (!node || node.nodeType !== 3) return;
+  const before = node.textContent.slice(0, sel.anchorOffset);
+  const map = { '#': 'h1', '##': 'h2', '###': 'h3', '-': 'ul', '*': 'ul', '1.': 'ol', '[]': 'cl', '>': 'quote' };
+  const k = map[before];
+  if (!k) return;
+  // only at the very start of a block
+  const block = node.parentElement.closest('p,div,h1,h2,h3,li,blockquote,pre');
+  const r0 = document.createRange(); r0.selectNodeContents(block && ed.contains(block) && block !== ed ? block : ed); r0.setEnd(node, sel.anchorOffset);
+  if (r0.toString() !== before) return;
   e.preventDefault();
-  node.textContent = node.textContent.slice(sel.anchorOffset);
-  const r = document.createRange(); r.setStart(node, 0); r.collapse(true); sel.removeAllRanges(); sel.addRange(r);
+  for (let i = 0; i < before.length; i++) document.execCommand('delete');
+  if (node.parentElement === ed || !block || block === ed) document.execCommand('formatBlock', false, 'p');
   if (k === 'h1' || k === 'h2' || k === 'h3') document.execCommand('formatBlock', false, k);
   else if (k === 'ul') document.execCommand('insertUnorderedList');
   else if (k === 'ol') document.execCommand('insertOrderedList');
@@ -848,21 +855,28 @@ views.settings = async (el) => {
   const ins = $('[data-install]', el); if (ins) ins.onclick = async () => { installEvt.prompt(); await installEvt.userChoice; installEvt = null; render(); };
   $('[data-export]', el).onclick = exportBackup;
   $('[data-import]', el).onchange = (e) => importBackup(e.target.files[0]);
-  $('[data-ics]', el).onclick = () => { const ics = L.toICS(S.tasks.filter((t) => t.date && !t.done)); download(new Blob([ics], { type: 'text/calendar' }), `sh-planner-${today()}.ics`); toast('Calendar file saved. Open it to add to Google Calendar.'); };
+  $('[data-ics]', el).onclick = () => { const ics = L.toICS(S.tasks.filter((t) => t.date && !t.done)); download(new Blob([ics], { type: 'text/calendar' }), `sh-planner-${today()}.ics`); if (!Notify.isNative()) toast('Calendar file saved. Open it to add to Google Calendar.'); };
   $('[data-wipe]', el).onclick = () => openSheet(`<h3>Erase all data?</h3><p class="muted">This deletes every task, note, habit and image on this device. Export a backup first if you might want it back.</p><div class="sheet-actions"><button class="btn ghost" data-close>Cancel</button><button class="btn danger" data-yes>Erase everything</button></div>`, (sh) => {
     sh.querySelector('[data-close]').onclick = closeSheet;
     sh.querySelector('[data-yes]').onclick = async () => { for (const s of ['tasks', 'notes', 'folders', 'habits', 'images']) await db.clear(s); await db.put('kv', { id: 'seeded', value: true }); Object.assign(S, { tasks: [], notes: [], folders: [], habits: [] }); closeSheet(); changed(); toast('All data erased'); };
   });
 };
-function download(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); }
+async function download(blob, name) {
+  if (Notify.isNative()) {
+    try {
+      const C = window.Capacitor; const FS = C.registerPlugin('Filesystem'); const SH = C.registerPlugin('Share');
+      const data = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.readAsDataURL(blob); });
+      const w = await FS.writeFile({ path: name, data, directory: 'CACHE' });
+      await SH.share({ title: name, dialogTitle: 'Save or send ' + name, files: [w.uri] });
+      return;
+    } catch (e) { if (!/cancel/i.test(String(e && e.message))) toast('Could not share the file: ' + (e && e.message || e)); return; }
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); }
 async function exportBackup() {
   const images = await Images.exportAll();
   const data = { app: 'sh-planner', version: 1, exportedAt: new Date().toISOString(), tasks: S.tasks, notes: S.notes, folders: S.folders, habits: S.habits, settings: S.settings, images };
   const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-  if (Notify.isNative() && navigator.share && navigator.canShare && navigator.canShare({ files: [new File([blob], 'x.json')] })) {
-    try { await navigator.share({ files: [new File([blob], `sh-planner-backup-${today()}.json`, { type: 'application/json' })], title: 'SH PLANNER backup' }); return; } catch (_) {}
-  }
-  download(blob, `sh-planner-backup-${today()}.json`);
+  await download(blob, `sh-planner-backup-${today()}.json`);
   toast(`Backup saved (${S.tasks.length} tasks, ${S.notes.length} notes, ${images.length} images)`);
 }
 async function importBackup(file) {
